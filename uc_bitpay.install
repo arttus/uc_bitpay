@@ -1,0 +1,147 @@
+<?php
+/**
+ * The MIT License (MIT)
+ * 
+ * Copyright (c) 2011-2015 BitPay
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
+/**
+ * @file
+ * uc_bitpay.install
+ *
+ * Installation file for the Bitpay payment module for Ubercart
+ */
+
+/**
+ * Implementation of hook_requirements().
+ *
+ * @param $phase
+ *
+ * @return array
+ */
+function uc_bitpay_requirements($phase)
+{
+
+
+    // BitPay's provided API code requires cURL.
+    $has_curl = function_exists('curl_init');
+    //initialize requirements
+    $requirements = array();
+    if (\Drupal::state()->get('uc_payment_method_bitpay_checkout'))
+    { 
+        $requirements['uc_bitpay_curl'] = array(
+            'title' => t('cURL'),
+            'value' => $has_curl ? t('Enabled') : t('Not found'),
+        );
+        if (!$has_curl)
+        {
+            $requirements['uc_bitpay_curl']['severity'] = REQUIREMENT_ERROR;
+            $requirements['uc_bitpay_curl']['description'] = t("Bitpay requires the PHP <a href='!curl_url'>cURL</a> library.", array('!curl_url' => 'http://php.net/manual/en/curl.setup.php'));
+        }
+    }
+
+    return $requirements;
+}
+
+/**
+ * Implementation of hook_schema().
+ *
+ * @return array
+ */
+function uc_bitpay_schema()
+{
+    $schema = array();
+
+    $schema['uc_payment_bitpay'] = array(
+        'description' => 'Stores Bitpay payment information.',
+        'fields' => array(
+            'invoice_id' => array(
+                'description' => 'Primary key: the Bitpay invoice ID.',
+                'type'        => 'varchar',
+                'length'      => 127,
+                'not null'    => TRUE,
+            ),
+            'order_id' => array(
+                'description' => 'The {uc_orders}.order_id.',
+                'type'        => 'int',
+                'unsigned'    => TRUE,
+                'not null'    => TRUE,
+            ),
+            'notify_email' => array(
+                'description' => 'The e-mail address to send status changes.',
+                'type'        => 'varchar',
+                'length'      => 255,
+                'default'     => '',
+            ),
+            'physical' => array(
+                'description' => 'Whether any physical good was purchased.',
+                'type'        => 'int',
+                'unsigned'    => TRUE,
+                'default'     => 1,
+            ),
+            'txn_speed' => array(
+                'description' => "The invoice's transaction acceptance speed.",
+                'type'        => 'varchar',
+                'length'      => 15,
+                'not null'    => TRUE,
+                'default'     => 'low',
+            ),
+            // NOTE: We're not storing Notification Level (confirm only/full),
+            // Physical Good Indicator, Redirect URL, or Item Description,
+            // all of which should be considered, but not necessarily used.
+            // The buyer-specific data (Name, Address, etc.) won't be considered.
+        ),
+        'indexes' => array(
+            'order_id' => array('order_id'),
+        ),
+        'primary key' => array('invoice_id')
+    );
+
+    return $schema;
+}
+
+/**
+ * Implementation of hook_install().
+ *
+ * Installs the Bitpay module; particularly, installs the database
+ * schema and alters orders statuses to include 'Bitpay pending'.
+ */
+function uc_bitpay_install()
+{
+    // Set the module weight so it can override other modules.
+
+    module_set_weight('bitpay', 999);
+
+   
+}
+
+
+/**
+ * Implementation of hook_uninstall()
+ *
+ * Uninstalls the Bitpay module.
+ */
+function uc_bitpay_uninstall()
+{
+    // Remove relevant data from the DB
+    db_delete('variable')->condition('name', db_like('uc_bitpay') . '%', 'LIKE')->execute();
+
+}

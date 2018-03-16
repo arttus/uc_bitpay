@@ -1,0 +1,7 @@
+uc_bitpay.ipn:
+  path: '/uc_bitpay/notifications'
+  defaults:
+    _title: 'Bitpay Notification'
+    _controller: '\Drupal\uc_bitpay\Controller\BitpayNotification::content'
+  requirements:
+    _permission: 'access content'

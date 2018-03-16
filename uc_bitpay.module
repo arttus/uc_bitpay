@@ -1,0 +1,264 @@
+<?php
+use Drupal\uc_payment\Entity\PaymentMethod;
+use Drupal\uc_order\Entity\Order;
+
+
+define('BITPAY_WEBSITE', "https://bitpay.com");
+define('BITPAY_SMALL_LOGO_FILE', "/img/bitpay23.png");
+define('BITCOIN_ACCEPTED_LOGO_FILE', "/bitcoin-accepted.png");
+define('BITCOIN_ACCEPTED_LOGO_PATH', base_path() . drupal_get_path('module', 'uc_bitpay') . BITCOIN_ACCEPTED_LOGO_FILE);
+define('BITPAY_NOTIFY_URL', "uc_bitpay/notifications");
+define('BITPAY_INVOICE_EXPIRATION_TIME', "15"); // in minutes; keep as a string
+require_once(DRUPAL_ROOT . '/modules/custom/uc_bitpay/bp_lib.php');
+
+/**
+ * Implements hook_mail().
+ */
+function uc_bitpay_mail($key, &$message, $params)
+{
+    $message['subject'] = 'Bitpay';
+    switch ($key) {
+        case 'notice':
+            $message['subject'] = 'Bitpay';
+            $message['body'][]  = print_r($params, true);
+            
+            break;
+    }
+}
+
+/**
+ * Returns an array of current Bitpay accepted currencies
+ */
+function _uc_bitpay_currency_array()
+{
+    $currencies = array();
+    $rate_url   = 'https://bitpay.com/api/rates';
+    $clist      = json_decode(file_get_contents($rate_url), true);
+    
+    foreach ($clist as $key => $value) {
+        $currencies[$value['code']] = '(' . $value['code'] . ') ' . t($value['name']);
+    }
+    
+    return $currencies;
+}
+
+/**
+ * Creates Invoice from order
+ */
+function uc_bitpay_create_invoice($order, $price = FALSE)
+{
+    global $base_url; //added for UC3
+    $method   = PaymentMethod::load($order->getPaymentMethodId());
+    $plugin   = $method->getPlugin();
+    $config   = $plugin->getConfiguration();
+    // Create a new Bitpay invoice, and record the details.             
+    // Order ID and passthru data need to be established.
+    $order_id = $order->id();
+    $pos_data = 'order=' . $order_id;
+    
+    // Calculate the price if necessary
+    if ($price === FALSE) {
+        $price       = $order->getTotal();
+        // Seems like taxes don't round themselves,
+        // so let's do the precision by hand again
+        $prec        = 2;
+        $factor      = pow(10, $prec);
+        $large_price = $price * $factor;
+        $price       = floor($large_price + 0.5) / $factor; // round up
+    }
+    
+    // Array the rest of the order data we need to send.
+    // Start with notificationURL, notificationEmail
+    // and fullNotifications
+    $options                    = array();
+    $site_url                   = $config['admin']['uc_bitpay_base_url'];
+    $options['notificationURL'] = $site_url . '/' . BITPAY_NOTIFY_URL;
+    if ($config['admin']['uc_bitpay_notify_email_active']) {
+        $options['notificationEmail'] = $config['admin']['uc_bitpay_notify_email'];
+    }
+    $options['fullNotifications'] = ($config['admin']['uc_bitpay_full_notify'] == 1);
+    
+    // orderID and API key
+    $options['orderID'] = $order_id;
+    $options['apiKey']  = $config['admin']['uc_bitpay_current_api_key'];
+    
+    // currency
+    $options['currency'] = $config['general']['uc_bitpay_currency'];
+    
+    // transactionSpeed, redirectURL and physical
+    $options['transactionSpeed'] = $config['general']['uc_bitpay_txn_speed'];
+    $rurl                        = $config['general']['uc_bitpay_redirect_url'];
+    
+    if ($rurl != '') {
+        $options['redirectURL'] = $rurl;
+    }
+    $options['physical'] = $config['general']['uc_bitpay_physical'];
+    
+    // itemDesc
+    // NOTE: There is a 100-char limit on descriptions;
+    // going over the limit causes the invoice to be rejected.
+    $desc = '';
+    // get the products in the order
+    foreach ($order->products as $product) {
+        // describe the first item, then break & continue
+        $desc = trim($product->qty->value . 'x ' . $product->title->value);
+        break;
+    }
+    if (count($order->products) > 1) {
+        $ending = ', etc.';
+    } else {
+        $ending = '';
+    }
+    if ((strlen($desc) + strlen($ending)) > 100) {
+        $desc = substr($desc, 0, (97 - strlen($ending))) . $ending . '...';
+    } else {
+        $desc .= $ending;
+    }
+    $options['itemDesc'] = $desc;
+    
+    // buyerName
+    $n       = '';
+    $address = $order->getAddress('billing');
+    if ($fn = $address->getFirstName()) {
+        $n = $fn;
+    }
+    if ($ln = $address->getLastName()) {
+        if ($n) {
+            $n .= ' ' . $ln;
+        } else {
+            $n = $ln;
+        }
+    }
+    if ($n) {
+        $options['buyerName'] = $n;
+    }
+    
+    // buyerAddress1, buyerAddress2, buyerCity,
+    // buyerState, buyerCountry, and buyerZip
+    if ($a1 = $address->getStreet2()) {
+        $options['buyerAddress1'] = $a1;
+    }
+    if ($a2 = $address->getStreet1()) {
+        $options['buyerAddress2'] = $a2;
+    }
+    if ($city = $address->getCity()) {
+        $options['buyerCity'] = $city;
+    }
+    
+    $options['buyerState'] = $address->getZone();
+    
+    if ($z = $address->getPostalCode()) {
+        $options['buyerZip'] = $z;
+    }
+    $country = $address->getCountry();
+    if (is_null($country) || $country == 0) {
+        $country = 'US';
+    }
+    $options['buyerCountry'] = $country;
+    
+    // buyerEmail, buyerPhone
+    if ($e = $order->getEmail()) {
+        $options['buyerEmail'] = $e;
+    }
+    if ($p = $address->getPhone()) {
+        $options['buyerPhone'] = $p;
+    }
+    
+    // now create the invoice
+    $resp = bpCreateInvoice($order_id, $price, $pos_data, $options);
+    
+    return $resp;
+}
+
+/**
+ * Bitpay Iframe form
+ */
+function uc_bitpay_iframe_form($url)
+{
+    
+    $iframe = '<iframe style="width:500px; height:150px; border:none; overflow:hidden;" scrolling="no" allowtransparency="true" frameborder="0" src="' . $url . '&view=iframe">' . 'Your browser does not support IFRAMEs. Please click ' . '<a href="' . $url . '" target="_blank">HERE</a> ' . 'to make payment, then return to this page to complete your order.' . '</iframe>';
+    
+    return $iframe;
+}
+
+/**
+ * Implements hook_uc_order_update().
+ */
+function uc_bitpay_uc_order_update($order)
+{
+    $added = false;
+    
+    
+    if ($order->getPaymentMethodId() == "bitpay") {
+        $method = PaymentMethod::load($order->getPaymentMethodId());
+        
+        $plugin   = $method->getPlugin();
+        $discount = $plugin->getDiscountedPrice($order);
+        if (is_array($order->line_items)) {
+            foreach ($order->line_items as $i => $line) {
+                if ($line['type'] == 'discount') {
+                    $added = true;
+                    break;
+                }
+            }
+        }
+        if (!$added) {
+            $order->line_items[] = uc_order_line_item_add($order->id(), 'discount', 'Bitcoin Discount', $discount * -1);
+            usort($order->line_items, 'Drupal\Component\Utility\SortArray::sortByWeightElement');
+            
+            
+        }
+    } else {
+        foreach ($order->line_items as $i => $line) {
+            if ($line['type'] == "discount") {
+                uc_order_delete_line_item($line['line_item_id']);
+                unset($order->line_items[$i]);
+            }
+        }
+    }
+    
+    
+}
+
+/**
+ * Checksif order is complete
+ */
+function uc_bitpay_order_is_complete()
+{
+    $session = \Drupal::service('session');
+    if ($session->has('cart_order')) {
+        $order = Order::load($session->get('cart_order'));
+        if ($order->getPaymentMethodId() == "bitpay") {
+            $method     = PaymentMethod::load($order->getPaymentMethodId());
+            $plugin     = $method->getPlugin();
+            $config     = $plugin->getConfiguration();
+            $invoice_id = db_query("SELECT invoice_id FROM {uc_payment_bitpay} WHERE order_id = :order_id", array(
+                ':order_id' => $session->get('cart_order')
+            ))->fetchField();
+            $resp       = bpGetInvoice($invoice_id, $config['admin']['uc_bitpay_current_api_key']);
+            
+            if ($resp['status'] == "complete") {
+                return true;
+            }
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Redirect order after payment is received
+ */
+function uc_bitpay_fix_order_redirection()
+{
+    if (uc_bitpay_order_is_complete()) {
+        $session = \Drupal::service('session');
+        $order   = Order::load($session->get('cart_order'));
+        $order->setStatusId('payment_received');
+        $order->save();
+        $session->remove('uc_checkout_review_' . $order->id());
+        $session->set('uc_checkout_complete_' . $order->id(), TRUE);
+        $response = new Symfony\Component\HttpFoundation\RedirectResponse('/cart/checkout/complete');
+        $response->send();
+    }
+}

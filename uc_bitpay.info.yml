@@ -1,0 +1,6 @@
+name: Bitpay
+description: Bitpay Processing
+package: Custom
+type: module
+version: 1.0
+core: 8.x
