@@ -38,4 +38,4 @@ Current maintainers:
 
 Sponsored by Arttus Inc
 
- * Travis Christopher (travisc) - https://drupal.org/user/6703
+ * Travis Christopher (travisc) - https://drupal.org/user/6907
